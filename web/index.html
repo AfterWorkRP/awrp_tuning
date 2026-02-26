@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AWRP Dyno</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Hamownia (Dyno)</h1>
+      <p>Wyniki pomiaru z komputera diagnostycznego.</p>
+    </header>
+
+    <main>
+      <canvas id="graph" width="900" height="380"></canvas>
+      <div class="meta">
+        <div><strong>Moc (HP):</strong> <span id="hp">—</span></div>
+        <div><strong>Moment obrotowy (Nm):</strong> <span id="nm">—</span></div>
+      </div>
+    </main>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
