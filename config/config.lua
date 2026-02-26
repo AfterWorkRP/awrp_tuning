@@ -48,27 +48,27 @@ Config.BlacklistedVehicles = {
 -- ==========================================
 Config.TunerShops = {
     ['LosSantosCustoms'] = {
-        Job = 'mechanic', -- Wymagana praca (frakcja) do obsługi
+        Job = 'tuner', -- Wymagana praca (frakcja) do obsługi
         
         -- Strefa służby (Duty)
-        DutyMarker = vec3(-203.2, -1328.0, 31.3),
+        DutyMarker = vec3(762.14691162109,-1226.0695800781,24.930212020874),
         
         -- Strefa craftingu/magazynu części
-        CraftingStash = vec3(-198.5, -1332.1, 31.3),
+        CraftingStash = vec3(759.29162597656,-1232.2034912109,24.988891601562),
         
         -- Punkt odbioru zamówień (Mod orders z tabletu)
-        DeliveryPoint = vec3(-208.5, -1338.1, 31.3),
+        DeliveryPoint = vec3(746.94805908203,-1215.1169433594,24.661222457886),
         
         -- Stanowisko modyfikacji
         TuningZones = {
-            vec3(-211.5, -1324.5, 30.8),
-            vec3(-206.5, -1324.5, 30.8)
+            vec3(765.04656982422,-1222.7725830078,24.204795837402)
+
         },
 
         -- Hamownia (Dyno)
         DynoZone = {
-            Coords = vec3(-215.5, -1327.5, 30.8),
-            Heading = 90.0
+            Coords = vec3(761.43615722656,-1209.9077148438,23.530738830566),
+            Heading = 3.0
         }
     },
 }
