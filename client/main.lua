@@ -91,3 +91,12 @@ AddStateBagChangeHandler('engineSound', nil, function(bagName, key, value, _rese
     -- Podmieniamy natywny dźwięk silnika na ten zdefiniowany w configu (np. 'DOMINATOR' dla V8)
     ForceVehicleEngineAudio(entity, value)
 end)
+
+AddStateBagChangeHandler('colorRGB', nil, function(bagName, key, value, _reserved, replicated)
+    if not value then return end
+    local entity = GetEntityFromStateBagName(bagName)
+    if entity == 0 or not DoesEntityExist(entity) then return end
+
+    -- Synchronizacja koloru dla wszystkich graczy w pobliżu
+    SetVehicleCustomPrimaryColour(entity, value.r, value.g, value.b)
+end)

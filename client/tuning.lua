@@ -1,275 +1,886 @@
 local ESX = exports["es_extended"]:getSharedObject()
 
 -- ==========================================
--- FUNKCJE INSTALACYJNE
+-- ZMIENNE POMOCNICZE (STATE MANAGEMENT)
 -- ==========================================
+local originalMods = {}
+local currentVehicle = nil
 
-local function PrepareVehicle(vehicle)
-    SetVehicleModKit(vehicle, 0)
+-- wheel types:
+local savedWheelType = -1     -- wheel type sprzed wejścia do tuningu
+local currentWheelType = -1   -- wheel type aktualnie wybranej kategorii felg (Sport/Muscle/...)
+
+-- lighting state snapshot (żeby ESC zawsze cofał do poprawnego stanu)
+local originalLighting = {
+    xenon = { enabled = false, color = 0, custom = { enabled = false, r = 255, g = 255, b = 255 } },
+    neon  = { enabled = { false, false, false, false }, color = { r = 255, g = 255, b = 255 } } -- 0 L,1 R,2 F,3 B
+}
+
+local originalPrimaryRGB = {r = 0, g = 0, b = 0}
+
+-- ==========================================
+-- Fallbacki (jeśli w Twoim zasobie są zdefiniowane globalnie, te nie będą użyte)
+-- ==========================================
+local function _L(key)
+    if _G._L then return _G._L(key) end
+    return tostring(key)
 end
 
---- Główna funkcja wykonawcza
+local function _trim(s)
+    return (tostring(s):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+AWRPUtils = AWRPUtils or {}
+AWRPUtils.Trim = AWRPUtils.Trim or _trim
+
+-- ==========================================
+-- WRAPPERY: Xenon/Neon
+-- ==========================================
+
+local function SetXenonEnabled(vehicle, enabled)
+    if not vehicle or not DoesEntityExist(vehicle) then return end
+    SetVehicleModKit(vehicle, 0)
+    ToggleVehicleMod(vehicle, 22, enabled == true)
+end
+
+local function GetXenonEnabled(vehicle)
+    if not vehicle or not DoesEntityExist(vehicle) then return false end
+    local ok, state = pcall(function() return IsToggleModOn(vehicle, 22) end)
+    return ok and state == true or false
+end
+
+local function SetXenonColorIndex(vehicle, colorIndex)
+    if not vehicle or not DoesEntityExist(vehicle) then return end
+    colorIndex = tonumber(colorIndex) or 0
+    SetXenonEnabled(vehicle, true)
+
+    if SetVehicleXenonLightsColor then
+        SetVehicleXenonLightsColor(vehicle, colorIndex)
+    elseif SetVehicleXenonLightsColour then
+        SetVehicleXenonLightsColour(vehicle, colorIndex)
+    else
+        Citizen.InvokeNative(0xE41033B25D003A07, vehicle, colorIndex)
+    end
+end
+
+local function GetXenonColorIndex(vehicle)
+    if not vehicle or not DoesEntityExist(vehicle) then return 0 end
+    local ok, val = pcall(function()
+        if GetVehicleXenonLightsColour then
+            return GetVehicleXenonLightsColour(vehicle)
+        end
+        return Citizen.InvokeNative(0x3DFF319A831E0CDB, vehicle)
+    end)
+    val = ok and tonumber(val) or 0
+    if val < 0 then val = 0 end
+    if val > 12 then val = 12 end
+    return val
+end
+
+local function SetXenonCustomRGB(vehicle, r, g, b)
+    if not vehicle or not DoesEntityExist(vehicle) then return end
+    r, g, b = tonumber(r) or 255, tonumber(g) or 255, tonumber(b) or 255
+    SetXenonEnabled(vehicle, true)
+    if SetVehicleXenonLightsCustomColor then
+        SetVehicleXenonLightsCustomColor(vehicle, r, g, b)
+    else
+        Citizen.InvokeNative(0x1683E7F0, vehicle, r, g, b)
+    end
+end
+
+local function ClearXenonCustomRGB(vehicle)
+    if not vehicle or not DoesEntityExist(vehicle) then return end
+    if ClearVehicleXenonLightsCustomColor then
+        ClearVehicleXenonLightsCustomColor(vehicle)
+    else
+        Citizen.InvokeNative(0x2867ED8C, vehicle)
+    end
+end
+
+local function TryGetXenonCustomRGB(vehicle)
+    if not vehicle or not DoesEntityExist(vehicle) then return false, 255,255,255 end
+
+    local ok, a, b, c, d = pcall(function()
+        return GetVehicleXenonLightsCustomColor(vehicle)
+    end)
+
+    if ok then
+        if type(a) == 'boolean' then
+            return a == true, tonumber(b) or 255, tonumber(c) or 255, tonumber(d) or 255
+        elseif type(a) == 'number' and type(b) == 'number' and type(c) == 'number' then
+            return true, tonumber(a) or 255, tonumber(b) or 255, tonumber(c) or 255
+        end
+    end
+
+    return false, 255, 255, 255
+end
+
+local function SetNeonEnabled(vehicle, index, enabled)
+    if not vehicle or not DoesEntityExist(vehicle) then return end
+    SetVehicleNeonLightEnabled(vehicle, index, enabled == true)
+end
+
+local function GetNeonEnabled(vehicle, index)
+    if not vehicle or not DoesEntityExist(vehicle) then return false end
+    local ok, state = pcall(function() return IsVehicleNeonLightEnabled(vehicle, index) end)
+    return ok and state == true or false
+end
+
+local function SetNeonRGB(vehicle, r, g, b)
+    if not vehicle or not DoesEntityExist(vehicle) then return end
+    r, g, b = tonumber(r) or 255, tonumber(g) or 255, tonumber(b) or 255
+    SetVehicleNeonLightsColour(vehicle, r, g, b)
+end
+
+local function GetNeonRGB(vehicle)
+    if not vehicle or not DoesEntityExist(vehicle) then return 255,255,255 end
+    local ok, r, g, b = pcall(function() return GetVehicleNeonLightsColour(vehicle) end)
+    if ok then
+        return tonumber(r) or 255, tonumber(g) or 255, tonumber(b) or 255
+    end
+    return 255,255,255
+end
+
+local function CaptureLightingOriginal(vehicle)
+    if not vehicle or not DoesEntityExist(vehicle) then return end
+
+    originalLighting.xenon.enabled = GetXenonEnabled(vehicle)
+    originalLighting.xenon.color = GetXenonColorIndex(vehicle)
+
+    local hasCustom, cr, cg, cb = TryGetXenonCustomRGB(vehicle)
+    originalLighting.xenon.custom.enabled = hasCustom
+    originalLighting.xenon.custom.r, originalLighting.xenon.custom.g, originalLighting.xenon.custom.b = cr, cg, cb
+
+    for i = 0, 3 do
+        originalLighting.neon.enabled[i+1] = GetNeonEnabled(vehicle, i)
+    end
+    local nr, ng, nb = GetNeonRGB(vehicle)
+    originalLighting.neon.color.r, originalLighting.neon.color.g, originalLighting.neon.color.b = nr, ng, nb
+end
+
+local function RestoreLightingOriginal(vehicle)
+    if not vehicle or not DoesEntityExist(vehicle) then return end
+
+    SetXenonEnabled(vehicle, originalLighting.xenon.enabled)
+
+    if originalLighting.xenon.custom.enabled then
+        SetXenonCustomRGB(vehicle, originalLighting.xenon.custom.r, originalLighting.xenon.custom.g, originalLighting.xenon.custom.b)
+    else
+        ClearXenonCustomRGB(vehicle)
+        SetXenonColorIndex(vehicle, originalLighting.xenon.color or 0)
+        SetXenonEnabled(vehicle, originalLighting.xenon.enabled) -- SetXenonColorIndex włącza xenon, więc cofamy
+    end
+
+    SetNeonRGB(vehicle, originalLighting.neon.color.r, originalLighting.neon.color.g, originalLighting.neon.color.b)
+    for i = 0, 3 do
+        SetNeonEnabled(vehicle, i, originalLighting.neon.enabled[i+1] == true)
+    end
+end
+
+-- ==========================================
+-- LIVE PREVIEW / RESET
+-- ==========================================
+
+local function ApplyPreview(vehicle, modType, modIndex, customData)
+    if not vehicle or not DoesEntityExist(vehicle) then return end
+
+    SetVehicleModKit(vehicle, 0)
+
+    if modType == 23 then
+        SetVehicleWheelType(vehicle, currentWheelType ~= -1 and currentWheelType or 0)
+        SetVehicleMod(vehicle, 23, modIndex, false)
+
+    elseif modType == 'rgb' then
+        if customData and customData.r and customData.g and customData.b then
+            SetVehicleCustomPrimaryColour(vehicle, customData.r, customData.g, customData.b)
+        end
+
+    elseif modType == 'xenon_color' then
+        ClearXenonCustomRGB(vehicle)
+        SetXenonColorIndex(vehicle, modIndex)
+
+    elseif modType == 'xenon_toggle' then
+        SetXenonEnabled(vehicle, modIndex == 1)
+
+    elseif modType == 'neon_toggle' then
+        if customData and customData.idx ~= nil then
+            SetNeonEnabled(vehicle, customData.idx, customData.enabled == true)
+        end
+
+    elseif modType == 'neon_rgb' then
+        if customData and customData.r and customData.g and customData.b then
+            SetNeonRGB(vehicle, customData.r, customData.g, customData.b)
+        end
+
+    elseif type(modType) == 'number' then
+        SetVehicleMod(vehicle, modType, modIndex, false)
+    end
+end
+
+local function ResetVehicleToOriginal()
+    if not currentVehicle or not DoesEntityExist(currentVehicle) then return end
+
+    SetVehicleModKit(currentVehicle, 0)
+
+    for modType, modIndex in pairs(originalMods) do
+        if type(modType) == 'number' then
+            SetVehicleMod(currentVehicle, modType, modIndex, false)
+        end
+    end
+
+    if savedWheelType ~= -1 then
+        SetVehicleWheelType(currentVehicle, savedWheelType)
+    end
+
+    SetVehicleCustomPrimaryColour(currentVehicle, originalPrimaryRGB.r, originalPrimaryRGB.g, originalPrimaryRGB.b)
+
+    RestoreLightingOriginal(currentVehicle)
+
+    currentVehicle = nil
+    originalMods = {}
+    savedWheelType = -1
+    currentWheelType = -1
+end
+
+-- ==========================================
+-- INSTALL: część / akcja
+-- ==========================================
+
 local function InstallMod(vehicle, modType, modIndex, itemRequired, customAction, customDataKey, customDataValue)
     ESX.TriggerServerCallback('awrp_tuning:checkItem', function(hasItem)
         if not hasItem then
-            lib.notify({ title = _L('error_title') or 'Błąd', description = (_L('part_missing') or 'Brak przedmiotu: '):format(itemRequired), type = 'error' })
+            lib.notify({ title = _L('error_title'), description = _L('part_missing'):format(itemRequired), type = 'error' })
             return
         end
 
-        TriggerEvent('awrp_tuning:startInstallAnimation')
-
         if lib.progressBar({
-            duration = 7500,
-            label = (_L('busy') or 'Montowanie') .. ': ' .. itemRequired .. '...',
+            duration = 5000,
+            label = _L('busy') .. ': ' .. itemRequired,
             useWhileDead = false,
             canCancel = true,
-            disable = { car = true, move = true, combat = true }
+            disable = { car = false, move = true, combat = true }
         }) then
             ESX.TriggerServerCallback('awrp_tuning:consumeItem', function(consumed)
                 if consumed then
                     local plate = AWRPUtils.Trim(GetVehicleNumberPlateText(vehicle))
 
-                    -- 1. Standardowe modyfikacje GTA (Zderzaki, Spoilery, Silnik)
-                    if modType ~= nil and modIndex ~= nil then
+                    SetVehicleModKit(vehicle, 0)
+
+                    if modType ~= nil and modIndex ~= nil and modType ~= 'rgb' then
+                        if modType == 23 then
+                            SetVehicleWheelType(vehicle, currentWheelType ~= -1 and currentWheelType or 0)
+                        end
                         SetVehicleMod(vehicle, modType, modIndex, false)
+                        originalMods[modType] = modIndex
                     end
 
-                    -- 2. Customowe akcje (Turbo, Szyby, Neony)
-                    if customAction then
-                        customAction(vehicle)
-                    end
+                    if customAction then customAction(vehicle) end
 
-                    -- 3. Zapis customowych danych do bazy i efekty natychmiastowe (Swapy, Drift)
                     if customDataKey then
                         TriggerServerEvent('awrp_tuning:saveTuningData', plate, customDataKey, customDataValue)
-                        
-                        if customDataKey == 'engine' then
-                            Entity(vehicle).state:set('engineSound', Config.EngineSwaps[customDataValue].soundName, true)
-                        elseif customDataKey == 'drift_tires' then
-                            SetVehicleReduceGrip(vehicle, customDataValue)
-                        elseif customDataKey == 'bulletproof_tires' then
-                            SetVehicleTyresCanBurst(vehicle, not customDataValue)
-                        end
                     end
 
-                    TriggerEvent('awrp_tuning:stopInstallAnimation')
-                    lib.notify({ title = _L('done') or 'Sukces', description = _L('install_success') or 'Zamontowano część pomyślnie!', type = 'success' })
-                else
-                    TriggerEvent('awrp_tuning:stopInstallAnimation')
+                    lib.notify({ title = _L('done'), description = _L('install_success'), type = 'success' })
                 end
             end, itemRequired)
-        else
-            TriggerEvent('awrp_tuning:stopInstallAnimation')
-            lib.notify({ title = _L('cancel') or 'Anulowano', description = _L('install_cancel') or 'Przerwano montaż.', type = 'warning' })
+        end
+    end, itemRequired)
+end
+
+local function InstallAction(vehicle, itemRequired, applyFn, onCommit, customDataKey, customDataValue)
+    if not itemRequired or itemRequired == '' then
+        if applyFn then applyFn(vehicle) end
+        if onCommit then onCommit() end
+        lib.notify({ title = _L('done'), description = _L('install_success'), type = 'success' })
+        return
+    end
+
+    ESX.TriggerServerCallback('awrp_tuning:checkItem', function(hasItem)
+        if not hasItem then
+            lib.notify({ title = _L('error_title'), description = _L('part_missing'):format(itemRequired), type = 'error' })
+            return
+        end
+
+        if lib.progressBar({
+            duration = 3500,
+            label = _L('busy') .. ': ' .. itemRequired,
+            useWhileDead = false,
+            canCancel = true,
+            disable = { car = false, move = true, combat = true }
+        }) then
+            ESX.TriggerServerCallback('awrp_tuning:consumeItem', function(consumed)
+                if consumed then
+                    local plate = AWRPUtils.Trim(GetVehicleNumberPlateText(vehicle))
+
+                    if applyFn then applyFn(vehicle) end
+                    if onCommit then onCommit() end
+
+                    if customDataKey then
+                        TriggerServerEvent('awrp_tuning:saveTuningData', plate, customDataKey, customDataValue)
+                    end
+
+                    lib.notify({ title = _L('done'), description = _L('install_success'), type = 'success' })
+                end
+            end, itemRequired)
         end
     end, itemRequired)
 end
 
 -- ==========================================
--- GENERATORY DYNAMICZNYCH MENU
+-- MENU: lista modów z live preview (onSelected)
+-- returnMenuId = menu, do którego wracamy po ESC
 -- ==========================================
 
---- Tworzy podmenu dla części, które mają wiele wariantów (np. spoilery, zderzaki)
-local function OpenDynamicModMenu(vehicle, title, modType, requiredItem)
-    local numMods = GetNumVehicleMods(vehicle, modType)
+local function OpenModCategory(title, modType, requiredItem, returnMenuId)
+    if not currentVehicle or not DoesEntityExist(currentVehicle) then return end
+
+    local veh = currentVehicle
+    SetVehicleModKit(veh, 0)
+
+    if originalMods[modType] == nil and type(modType) == 'number' then
+        originalMods[modType] = GetVehicleMod(veh, modType)
+    end
+
+    local numMods = (type(modType) == 'number') and GetNumVehicleMods(veh, modType) or 0
     local options = {}
 
-    if numMods == 0 then
-        lib.notify({ title = _L('no_options_title') or 'Brak opcji', description = _L('no_options_desc') or 'Ten pojazd nie posiada modyfikacji tego typu.', type = 'info' })
-        return
-    end
+    options[#options + 1] = { label = "Fabryczne (Stock)", args = { modIndex = -1 }, close = false }
 
-    -- Opcja zdjęcia modyfikacji (Stock)
-    table.insert(options, {
-        title = (_L('remove_part') or 'Zdemontuj część'):format('Stock'),
-        icon = 'xmark',
-        onSelect = function()
-            InstallMod(vehicle, modType, -1, requiredItem, nil, nil, nil)
-        end
-    })
-
-    -- Generowanie listy dostępnych części
     for i = 0, numMods - 1 do
-        table.insert(options, {
-            title = title .. ' - ' .. (_L('variant') or 'Wariant') .. ' ' .. (i + 1),
-            description = (_L('install_part') or 'Wymaga: '):format(requiredItem),
-            icon = 'wrench',
-            onSelect = function()
-                InstallMod(vehicle, modType, i, requiredItem, nil, nil, nil)
-            end
-        })
+        local textLabel = GetModTextLabel(veh, modType, i)
+        local label = textLabel and GetLabelText(textLabel) or "NULL"
+        if not label or label == "NULL" then
+            label = ("%s #%d"):format(title, i + 1)
+        end
+        options[#options + 1] = { label = label, args = { modIndex = i }, close = false }
     end
 
-    local menuId = 'mod_menu_' .. modType
-    lib.registerContext({ id = menuId, title = title, options = options })
-    lib.showContext(menuId)
+    local currentIdx = -1
+    if type(modType) == 'number' then currentIdx = GetVehicleMod(veh, modType) end
+    local defaultIndex = (currentIdx == -1) and 1 or (currentIdx + 2)
+
+    local menuId = ('tuning_mod_menu_%s'):format(tostring(modType))
+
+    lib.registerMenu({
+        id = menuId,
+        title = title,
+        position = 'top-right',
+        disableInput = true,
+        options = options,
+        defaultIndex = defaultIndex,
+
+        onSelected = function(_, _, args)
+            if not args or args.modIndex == nil then return end
+            ApplyPreview(veh, modType, args.modIndex)
+        end,
+
+        onClose = function()
+            if not veh or not DoesEntityExist(veh) then return end
+            SetVehicleModKit(veh, 0)
+
+            if modType == 23 then
+                SetVehicleWheelType(veh, currentWheelType ~= -1 and currentWheelType or 0)
+            end
+
+            if type(modType) == 'number' then
+                SetVehicleMod(veh, modType, originalMods[modType] or -1, false)
+            end
+
+            if returnMenuId then lib.showMenu(returnMenuId) end
+        end,
+    }, function(_, _, args)
+        if not args or args.modIndex == nil then return end
+        InstallMod(veh, modType, args.modIndex, requiredItem)
+    end)
+
+    lib.showMenu(menuId)
 end
 
 -- ==========================================
--- GŁÓWNE MENU STREFOWE (ox_lib)
+-- MENU: Oświetlenie (xenon/neon) – wszystko jako lib.registerMenu
 -- ==========================================
 
-RegisterNetEvent('awrp_tuning:openZoneMenu', function(vehicle, zone)
-    TriggerEvent('awrp_tuning:setCamera', vehicle, zone)
-    PrepareVehicle(vehicle)
-    local options = {}
+local function OpenXenonToggleMenu(requiredItem, returnMenuId)
+    local veh = currentVehicle
+    if not veh or not DoesEntityExist(veh) then return end
 
-    -- ==========================================
-    -- 1. STREFA SILNIKA I PRZODU
-    -- ==========================================
-    if zone == 'engine' then
-        table.insert(options, {
-            title = _L('menu_engine') or 'Silnik (Ulepszenie)', icon = 'gauge-high',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('menu_engine') or 'Ulepszenie Silnika', 11, Config.Items.Performance.Engine) end
-        })
-        table.insert(options, {
-            title = _L('menu_transmission') or 'Skrzynia biegów', icon = 'gear',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('menu_transmission') or 'Skrzynia biegów', 13, Config.Items.Performance.Transmission) end
-        })
-        table.insert(options, {
-            title = _L('menu_turbo') or 'Turbosprężarka', description = (_L('install_part') or 'Wymaga: '):format(Config.Items.Performance.Turbo), icon = 'fan',
-            onSelect = function() 
-                InstallMod(vehicle, nil, nil, Config.Items.Performance.Turbo, function(veh) ToggleVehicleMod(veh, 18, true) end, nil, nil) 
-            end
-        })
-        table.insert(options, {
-            title = _L('hood') or 'Maska', icon = 'car',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('hood') or 'Maska', 7, Config.Items.Cosmetics.Hood) end
-        })
-        table.insert(options, {
-            title = _L('grille') or 'Kratka chłodnicy (Grille)', icon = 'bars',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('grille') or 'Kratka chłodnicy', 6, Config.Items.Cosmetics.Grille) end
-        })
-        table.insert(options, {
-            title = _L('horn') or 'Klakson', icon = 'bullhorn',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('horn') or 'Klakson', 14, Config.Items.Cosmetics.Horn) end
-        })
-        
-        -- ENGINE SWAPS
-        for k, v in pairs(Config.EngineSwaps) do
-            table.insert(options, {
-                title = (_L('menu_swap') or 'Swap') .. ': ' .. v.label, 
-                description = (_L('install_part') or 'Wymaga: '):format(k), 
-                icon = 'fire',
-                onSelect = function() InstallMod(vehicle, nil, nil, k, nil, 'engine', k) end
-            })
+    local options = {
+        { label = "⬅ Powrót", args = { back = true }, close = false },
+        { label = "Wyłącz Xenony", args = { enabled = false }, close = false },
+        { label = "Włącz Xenony",  args = { enabled = true },  close = false },
+    }
+
+    lib.registerMenu({
+        id = "tuning_xenon_toggle",
+        title = "Reflektory Xenon",
+        position = 'top-right',
+        disableInput = true,
+        options = options,
+        defaultIndex = GetXenonEnabled(veh) and 3 or 2,
+
+        onSelected = function(_, _, args)
+            if not args or args.back then return end
+            ApplyPreview(veh, 'xenon_toggle', args.enabled and 1 or 0)
+        end,
+
+        onClose = function()
+            RestoreLightingOriginal(veh)
+            if returnMenuId then lib.showMenu(returnMenuId) end
+        end
+    }, function(_, _, args)
+        if not args then return end
+        if args.back then
+            lib.showMenu(returnMenuId)
+            return
         end
 
-    -- ==========================================
-    -- 2. STREFA KÓŁ I ZAWIESZENIA
-    -- ==========================================
-    elseif zone == 'wheels' then
-        table.insert(options, {
-            title = _L('menu_suspension') or 'Zawieszenie', icon = 'compress',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('menu_suspension') or 'Zawieszenie', 15, Config.Items.Performance.Suspension) end
-        })
-        table.insert(options, {
-            title = _L('brakes') or 'Hamulce', icon = 'circle-stop',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('brakes') or 'Hamulce', 12, Config.Items.Performance.Brakes) end
-        })
-        table.insert(options, {
-            title = _L('menu_wheels') or 'Felgi (Sportowe)', icon = 'dharmachakra',
-            onSelect = function() 
-                SetVehicleWheelType(vehicle, 0)
-                OpenDynamicModMenu(vehicle, _L('menu_wheels') or 'Felgi', 23, Config.Items.Cosmetics.Rim) 
-            end
-        })
-        table.insert(options, {
-            title = _L('bulletproof_tires') or 'Załóż Opony Kuloodporne', description = (_L('install_part') or 'Wymaga: '):format(Config.Items.Wheels.Bulletproof), icon = 'shield',
-            onSelect = function() InstallMod(vehicle, nil, nil, Config.Items.Wheels.Bulletproof, nil, 'bulletproof_tires', true) end
-        })
-        table.insert(options, {
-            title = _L('menu_drift_tires') or 'Załóż Opony do Driftu', description = (_L('install_part') or 'Wymaga: '):format(Config.Items.Wheels.Drift), icon = 'rotate-right',
-            onSelect = function() InstallMod(vehicle, nil, nil, Config.Items.Wheels.Drift, nil, 'drift_tires', true) end
-        })
-        table.insert(options, {
-            title = _L('stock_tires') or 'Przywróć Opony Standardowe', description = (_L('install_part') or 'Wymaga: '):format(Config.Items.Wheels.Stock), icon = 'car',
-            onSelect = function() 
-                InstallMod(vehicle, nil, nil, Config.Items.Wheels.Stock, function(veh) 
-                    SetVehicleReduceGrip(veh, false)
-                    SetVehicleTyresCanBurst(veh, true)
-                end, 'drift_tires', false) 
-            end
-        })
+        InstallAction(veh, requiredItem, function(v)
+            SetXenonEnabled(v, args.enabled)
+        end, function()
+            originalLighting.xenon.enabled = args.enabled == true
+        end, "xenon_enabled", args.enabled == true)
+    end)
 
-    -- ==========================================
-    -- 3. STREFA TYŁU (Wydech/Spoiler)
-    -- ==========================================
-    elseif zone == 'rear' then
-        table.insert(options, {
-            title = _L('rear_bumper') or 'Zderzak tylny', icon = 'car-rear',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('rear_bumper') or 'Tylny Zderzak', 2, Config.Items.Cosmetics.RearBumper) end
-        })
-        table.insert(options, {
-            title = _L('spoiler') or 'Spoiler', icon = 'wind',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('spoiler') or 'Spoiler', 0, Config.Items.Cosmetics.Spoiler) end
-        })
-        table.insert(options, {
-            title = _L('exhaust') or 'Wydech', icon = 'smog',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('exhaust') or 'Wydech', 4, Config.Items.Cosmetics.Exhaust) end
-        })
-        table.insert(options, {
-            title = _L('roof') or 'Dach / Bagażnik', icon = 'arrow-up',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('roof') or 'Dach', 10, Config.Items.Cosmetics.Roof) end
-        })
+    lib.showMenu("tuning_xenon_toggle")
+end
 
-    -- ==========================================
-    -- 4. STREFA KAROSERII I WNĘTRZA
-    -- ==========================================
-    elseif zone == 'body' then
-        table.insert(options, {
-            title = _L('front_bumper') or 'Zderzak przedni', icon = 'car-side',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('front_bumper') or 'Przedni Zderzak', 1, Config.Items.Cosmetics.FrontBumper) end
-        })
-        table.insert(options, {
-            title = _L('side_skirts') or 'Progi (Side Skirts)', icon = 'arrows-left-right',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('side_skirts') or 'Progi', 3, Config.Items.Cosmetics.SideSkirt) end
-        })
-        table.insert(options, {
-            title = _L('fenders') or 'Błotniki (Fenders)', icon = 'car',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('fenders') or 'Błotniki', 8, Config.Items.Cosmetics.Fender) end
-        })
-        table.insert(options, {
-            title = _L('frame') or 'Klatka / Podwozie', icon = 'border-all',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('frame') or 'Klatka bezpieczeństwa', 5, Config.Items.Cosmetics.Frame) end
-        })
-        table.insert(options, {
-            title = _L('armor') or 'Opancerzenie', icon = 'shield-halved',
-            onSelect = function() OpenDynamicModMenu(vehicle, _L('armor') or 'Opancerzenie', 16, Config.Items.Performance.Armor) end
-        })
-        table.insert(options, {
-            title = _L('window_tint') or 'Przyciemnianie szyb', description = (_L('install_part') or 'Wymaga: '):format(Config.Items.Cosmetics.WindowTint), icon = 'eye-slash',
-            onSelect = function()
-                local input = lib.inputDialog(_L('window_tint') or 'Przyciemnianie szyb', {
-                    { type = 'select', label = _L('tint_level') or 'Wybierz poziom folii', options = {
-                        { value = 0, label = _L('tint_none') or 'Brak (Stock)' }, { value = 1, label = _L('tint_dark') or 'Ciemne (Dark Smoke)' },
-                        { value = 2, label = _L('tint_medium') or 'Średnie (Light Smoke)' }, { value = 3, label = _L('tint_limo') or 'Limo (Najciemniejsze)' }
-                    }}
-                })
-                if input and input[1] then
-                    InstallMod(vehicle, nil, nil, Config.Items.Cosmetics.WindowTint, function(veh) SetVehicleWindowTint(veh, input[1]) end, nil, nil)
-                end
-            end
-        })
-        table.insert(options, {
-            title = _L('respray') or 'Lakierowanie (RGB)', description = (_L('install_part') or 'Wymaga: '):format(Config.Items.Cosmetics.Respray), icon = 'palette',
-            onSelect = function()
-                local input = lib.inputDialog(_L('respray_menu') or 'Mieszalnia lakieru', {
-                    { type = 'color', label = _L('respray_color') or 'Nowy kolor główny (Primary)', format = 'rgb' }
-                })
-                if input and input[1] then
-                    local color = input[1] -- Format "rgb(r, g, b)"
-                    local r, g, b = color:match("rgb%((%d+), (%d+), (%d+)%)")
-                    InstallMod(vehicle, nil, nil, Config.Items.Cosmetics.Respray, function(veh) 
-                        SetVehicleCustomPrimaryColour(veh, tonumber(r), tonumber(g), tonumber(b)) 
-                    end, 'rgb_primary', { r = tonumber(r), g = tonumber(g), b = tonumber(b) })
-                end
-            end
-        })
+local function OpenXenonColorMenu(requiredItem, returnMenuId)
+    local veh = currentVehicle
+    if not veh or not DoesEntityExist(veh) then return end
+
+    local options = { { label = "⬅ Powrót", args = { back = true }, close = false } }
+    for i = 0, 12 do
+        options[#options+1] = { label = ("Kolor #%d"):format(i), args = { idx = i }, close = false }
     end
 
-    -- Wyświetlanie zbudowanego menu
-    local contextId = 'tuning_menu_' .. zone
-    lib.registerContext({ id = contextId, title = (_L('zone') or 'Strefa') .. ': ' .. string.upper(zone), options = options })
-    lib.showContext(contextId)
+    local currentIdx = GetXenonColorIndex(veh)
+
+    lib.registerMenu({
+        id = "tuning_xenon_color",
+        title = "Kolor Xenon (0-12)",
+        position = 'top-right',
+        disableInput = true,
+        options = options,
+        defaultIndex = (currentIdx + 2), -- +1 bo back, +1 bo 1-based
+
+        onSelected = function(_, _, args)
+            if not args or args.back then return end
+            ApplyPreview(veh, 'xenon_color', args.idx)
+        end,
+
+        onClose = function()
+            RestoreLightingOriginal(veh)
+            if returnMenuId then lib.showMenu(returnMenuId) end
+        end
+    }, function(_, _, args)
+        if not args then return end
+        if args.back then
+            lib.showMenu(returnMenuId)
+            return
+        end
+
+        InstallAction(veh, requiredItem, function(v)
+            ClearXenonCustomRGB(v)
+            SetXenonColorIndex(v, args.idx)
+        end, function()
+            originalLighting.xenon.color = args.idx
+            originalLighting.xenon.custom.enabled = false
+        end, "xenon_color", args.idx)
+    end)
+
+    lib.showMenu("tuning_xenon_color")
+end
+
+local function OpenXenonCustomMenu(requiredItem, returnMenuId)
+    local veh = currentVehicle
+    if not veh or not DoesEntityExist(veh) then return end
+
+    local options = {
+        { label = "⬅ Powrót", args = { back = true }, close = false },
+        { label = "Ustaw Custom RGB…", args = { set = true }, close = false },
+        { label = "Wyczyść Custom RGB", args = { clear = true }, close = false },
+    }
+
+    lib.registerMenu({
+        id = "tuning_xenon_custom",
+        title = "Xenon: Custom RGB",
+        position = 'top-right',
+        disableInput = true,
+        options = options,
+    }, function(_, _, args)
+        if not args then return end
+        if args.back then
+            lib.showMenu(returnMenuId)
+            return
+        end
+
+        if args.set then
+            local input = lib.inputDialog("Xenon RGB", {{ type = 'color', label = "Kolor", format = 'rgb' }})
+            if not input or not input[1] then
+                lib.showMenu("tuning_xenon_custom")
+                return
+            end
+
+            local r_c, g_c, b_c = input[1]:match("rgb%((%d+), (%d+), (%d+)%)")
+            r_c, g_c, b_c = tonumber(r_c), tonumber(g_c), tonumber(b_c)
+
+            ApplyPreview(veh, 'xenon_toggle', 1)
+            SetXenonCustomRGB(veh, r_c, g_c, b_c)
+
+            InstallAction(veh, requiredItem, function(v)
+                SetXenonCustomRGB(v, r_c, g_c, b_c)
+            end, function()
+                originalLighting.xenon.custom.enabled = true
+                originalLighting.xenon.custom.r, originalLighting.xenon.custom.g, originalLighting.xenon.custom.b = r_c, g_c, b_c
+            end, "xenon_custom", { r = r_c, g = g_c, b = b_c })
+
+            lib.showMenu("tuning_xenon_custom")
+            return
+        end
+
+        if args.clear then
+            InstallAction(veh, requiredItem, function(v)
+                ClearXenonCustomRGB(v)
+                SetXenonColorIndex(v, originalLighting.xenon.color or 0)
+                SetXenonEnabled(v, originalLighting.xenon.enabled)
+            end, function()
+                originalLighting.xenon.custom.enabled = false
+            end, "xenon_custom", false)
+
+            lib.showMenu("tuning_xenon_custom")
+        end
+    end)
+
+    lib.showMenu("tuning_xenon_custom")
+end
+
+local function OpenNeonToggleMenu(requiredItem, returnMenuId)
+    local veh = currentVehicle
+    if not veh or not DoesEntityExist(veh) then return end
+
+    local options = {
+        { label = "⬅ Powrót", args = { back = true }, close = false },
+        { label = "Neony: Wszystkie OFF", args = { mode = "all", enabled = false }, close = false },
+        { label = "Neony: Wszystkie ON",  args = { mode = "all", enabled = true },  close = false },
+        { label = "Lewy (0) – przełącz",  args = { mode = "one", idx = 0 }, close = false },
+        { label = "Prawy (1) – przełącz", args = { mode = "one", idx = 1 }, close = false },
+        { label = "Przód (2) – przełącz", args = { mode = "one", idx = 2 }, close = false },
+        { label = "Tył (3) – przełącz",   args = { mode = "one", idx = 3 }, close = false },
+    }
+
+    lib.registerMenu({
+        id = "tuning_neon_toggle",
+        title = "Neony: Włącz / Wyłącz",
+        position = 'top-right',
+        disableInput = true,
+        options = options,
+
+        onSelected = function(_, _, args)
+            if not args or args.back then return end
+            if args.mode == "all" then
+                for i = 0, 3 do
+                    ApplyPreview(veh, 'neon_toggle', nil, { idx = i, enabled = args.enabled })
+                end
+            else
+                local current = GetNeonEnabled(veh, args.idx)
+                ApplyPreview(veh, 'neon_toggle', nil, { idx = args.idx, enabled = not current })
+            end
+        end,
+
+        onClose = function()
+            RestoreLightingOriginal(veh)
+            if returnMenuId then lib.showMenu(returnMenuId) end
+        end
+    }, function(_, _, args)
+        if not args then return end
+        if args.back then
+            lib.showMenu(returnMenuId)
+            return
+        end
+
+        if args.mode == "all" then
+            InstallAction(veh, requiredItem, function(v)
+                for i = 0, 3 do SetNeonEnabled(v, i, args.enabled) end
+            end, function()
+                for i = 0, 3 do originalLighting.neon.enabled[i+1] = args.enabled end
+            end, "neon_enabled", args.enabled)
+        else
+            local idx = args.idx
+            local newState = not GetNeonEnabled(veh, idx)
+            InstallAction(veh, requiredItem, function(v)
+                SetNeonEnabled(v, idx, newState)
+            end, function()
+                originalLighting.neon.enabled[idx+1] = newState
+            end, ("neon_side_%d"):format(idx), newState)
+        end
+    end)
+
+    lib.showMenu("tuning_neon_toggle")
+end
+
+local function OpenNeonColorPicker(requiredItem, returnMenuId)
+    local veh = currentVehicle
+    if not veh or not DoesEntityExist(veh) then return end
+
+    local input = lib.inputDialog("Neony RGB", {{ type = 'color', label = "Kolor", format = 'rgb' }})
+    if not input or not input[1] then
+        if returnMenuId then lib.showMenu(returnMenuId) end
+        return
+    end
+
+    local r_c, g_c, b_c = input[1]:match("rgb%((%d+), (%d+), (%d+)%)")
+    r_c, g_c, b_c = tonumber(r_c), tonumber(g_c), tonumber(b_c)
+
+    ApplyPreview(veh, 'neon_rgb', nil, { r = r_c, g = g_c, b = b_c })
+
+    InstallAction(veh, requiredItem, function(v)
+        SetNeonRGB(v, r_c, g_c, b_c)
+    end, function()
+        originalLighting.neon.color.r, originalLighting.neon.color.g, originalLighting.neon.color.b = r_c, g_c, b_c
+    end, "neon_color", { r = r_c, g = g_c, b = b_c })
+
+    if returnMenuId then lib.showMenu(returnMenuId) end
+end
+
+-- ==========================================
+-- ROOT MENUS (bez context menu) – tablet odpala to
+-- ==========================================
+
+local function OpenBodyMenu()
+    lib.registerMenu({
+        id = 'tuning_body_menu',
+        title = 'Karoseria',
+        position = 'top-right',
+        disableInput = true,
+        options = {
+            { label = "⬅ Powrót", args = { back = true }, close = false },
+            { label = "Zderzak Przód", args = { open = 'mod', title = "Zderzak Przód", modType = 1, item = Config.Items.Cosmetics.FrontBumper }, close = false },
+            { label = "Zderzak Tył",  args = { open = 'mod', title = "Zderzak Tył",  modType = 2, item = Config.Items.Cosmetics.RearBumper }, close = false },
+            { label = "Progi",        args = { open = 'mod', title = "Progi",        modType = 3, item = Config.Items.Cosmetics.SideSkirt }, close = false },
+            { label = "Maska",        args = { open = 'mod', title = "Maska",        modType = 7, item = Config.Items.Cosmetics.Hood }, close = false },
+            { label = "Spoiler",      args = { open = 'mod', title = "Spoiler",      modType = 0, item = Config.Items.Cosmetics.Spoiler }, close = false },
+            { label = "Błotniki",     args = { open = 'mod', title = "Błotniki",     modType = 8, item = Config.Items.Cosmetics.Fender }, close = false },
+            { label = "Dach / Bagażnik", args = { open = 'mod', title = "Dach",      modType = 10, item = Config.Items.Cosmetics.Roof }, close = false },
+            { label = "Lakierowanie (Primary)", args = { open = 'paint' }, close = false },
+        }
+    }, function(_, _, args)
+        if not args then return end
+        if args.back then
+            lib.showMenu('tuning_root_menu')
+            return
+        end
+
+        if args.open == 'paint' then
+            local input = lib.inputDialog("Mieszalnia lakieru", {{ type = 'color', label = "Wybierz kolor", format = 'rgb' }})
+            if input and input[1] then
+                local r_c, g_c, b_c = input[1]:match("rgb%((%d+), (%d+), (%d+)%)")
+                InstallMod(currentVehicle, 'rgb', nil, Config.Items.Cosmetics.Respray, function(v)
+                    SetVehicleCustomPrimaryColour(v, tonumber(r_c), tonumber(g_c), tonumber(b_c))
+                end, 'rgb_primary', {r = tonumber(r_c), g = tonumber(g_c), b = tonumber(b_c)})
+            end
+            lib.showMenu('tuning_body_menu')
+            return
+        end
+
+        if args.open == 'mod' then
+            OpenModCategory(args.title, args.modType, args.item, 'tuning_body_menu')
+        end
+    end)
+
+    lib.showMenu('tuning_body_menu')
+end
+
+local function OpenWheelsMenu()
+    lib.registerMenu({
+        id = 'tuning_wheels_menu',
+        title = 'Koła i Zawieszenie',
+        position = 'top-right',
+        disableInput = true,
+        options = {
+            { label = "⬅ Powrót", args = { back = true }, close = false },
+
+            { label = "Felgi (Sportowe)", args = { wheelType = 0 }, close = false },
+            { label = "Felgi (Muscle)",   args = { wheelType = 1 }, close = false },
+            { label = "Felgi (Lowrider)", args = { wheelType = 2 }, close = false },
+            { label = "Felgi (SUV)",      args = { wheelType = 3 }, close = false },
+            { label = "Felgi (Off-Road)", args = { wheelType = 4 }, close = false },
+
+            { label = "Zawieszenie", args = { open = 'mod', title = "Zawieszenie", modType = 15, item = Config.Items.Performance.Suspension }, close = false },
+            { label = "Hamulce",     args = { open = 'mod', title = "Hamulce",     modType = 12, item = Config.Items.Performance.Brakes }, close = false },
+        }
+    }, function(_, _, args)
+        if not args then return end
+        if args.back then
+            lib.showMenu('tuning_root_menu')
+            return
+        end
+
+        if args.wheelType ~= nil then
+            currentWheelType = args.wheelType
+            SetVehicleWheelType(currentVehicle, args.wheelType)
+            OpenModCategory("Felgi", 23, Config.Items.Cosmetics.Rim, 'tuning_wheels_menu')
+            return
+        end
+
+        if args.open == 'mod' then
+            OpenModCategory(args.title, args.modType, args.item, 'tuning_wheels_menu')
+        end
+    end)
+
+    lib.showMenu('tuning_wheels_menu')
+end
+
+local function OpenPerfMenu()
+    lib.registerMenu({
+        id = 'tuning_perf_menu',
+        title = 'Osiągi (Performance)',
+        position = 'top-right',
+        disableInput = true,
+        options = {
+            { label = "⬅ Powrót", args = { back = true }, close = false },
+            { label = "Ulepszenie Silnika", args = { open = 'mod', title = "Silnik", modType = 11, item = Config.Items.Performance.Engine }, close = false },
+            { label = "Skrzynia Biegów",     args = { open = 'mod', title = "Skrzynia Biegów", modType = 13, item = Config.Items.Performance.Transmission }, close = false },
+            { label = "Turbosprężarka",      args = { open = 'turbo' }, close = false },
+        }
+    }, function(_, _, args)
+        if not args then return end
+        if args.back then
+            lib.showMenu('tuning_root_menu')
+            return
+        end
+
+        if args.open == 'mod' then
+            OpenModCategory(args.title, args.modType, args.item, 'tuning_perf_menu')
+            return
+        end
+
+        if args.open == 'turbo' then
+            InstallMod(currentVehicle, nil, nil, Config.Items.Performance.Turbo, function(v)
+                ToggleVehicleMod(v, 18, true)
+            end)
+            lib.showMenu('tuning_perf_menu')
+        end
+    end)
+
+    lib.showMenu('tuning_perf_menu')
+end
+
+local function OpenInteriorMenu()
+    lib.registerMenu({
+        id = 'tuning_interior_menu',
+        title = 'Wnętrze',
+        position = 'top-right',
+        disableInput = true,
+        options = {
+            { label = "⬅ Powrót", args = { back = true }, close = false },
+            { label = "Klatka Bezpieczeństwa", args = { open = 'mod', title = "Klatka", modType = 5,  item = Config.Items.Cosmetics.Frame }, close = false },
+            { label = "Wykończenie Kabiny",    args = { open = 'mod', title = "Wnętrze", modType = 27, item = Config.Items.Cosmetics.Interior }, close = false },
+            { label = "Ozdoby (Dashboard)",    args = { open = 'mod', title = "Dashboard", modType = 29, item = Config.Items.Cosmetics.Interior }, close = false },
+        }
+    }, function(_, _, args)
+        if not args then return end
+        if args.back then
+            lib.showMenu('tuning_root_menu')
+            return
+        end
+        if args.open == 'mod' then
+            OpenModCategory(args.title, args.modType, args.item, 'tuning_interior_menu')
+        end
+    end)
+
+    lib.showMenu('tuning_interior_menu')
+end
+
+local function OpenLightsMenu()
+    local xenonItem = (Config.Items and Config.Items.Cosmetics and Config.Items.Cosmetics.Xenon) or nil
+    local neonItem  = (Config.Items and Config.Items.Cosmetics and Config.Items.Cosmetics.Neon)  or nil
+
+    lib.registerMenu({
+        id = 'tuning_lights_menu',
+        title = 'Oświetlenie',
+        position = 'top-right',
+        disableInput = true,
+        options = {
+            { label = "⬅ Powrót", args = { back = true }, close = false },
+            { label = "Xenony: Włącz/Wyłącz", args = { open = 'xenon_toggle', item = xenonItem }, close = false },
+            { label = "Xenony: Kolor (0-12)", args = { open = 'xenon_color',  item = xenonItem }, close = false },
+            { label = "Xenony: Custom RGB",   args = { open = 'xenon_custom', item = xenonItem }, close = false },
+            { label = "Neony: Włącz/Wyłącz",  args = { open = 'neon_toggle',  item = neonItem }, close = false },
+            { label = "Neony: Kolor RGB",     args = { open = 'neon_color',   item = neonItem }, close = false },
+        }
+    }, function(_, _, args)
+        if not args then return end
+        if args.back then
+            lib.showMenu('tuning_root_menu')
+            return
+        end
+
+        if args.open == 'xenon_toggle' then OpenXenonToggleMenu(args.item, 'tuning_lights_menu') return end
+        if args.open == 'xenon_color'  then OpenXenonColorMenu(args.item,  'tuning_lights_menu') return end
+        if args.open == 'xenon_custom' then OpenXenonCustomMenu(args.item, 'tuning_lights_menu') return end
+        if args.open == 'neon_toggle'  then OpenNeonToggleMenu(args.item,  'tuning_lights_menu') return end
+        if args.open == 'neon_color'   then OpenNeonColorPicker(args.item, 'tuning_lights_menu') return end
+    end)
+
+    lib.showMenu('tuning_lights_menu')
+end
+
+local function OpenTuningRootMenu()
+    local ped = PlayerPedId()
+    local veh = GetVehiclePedIsIn(ped, false)
+    if not veh or veh == 0 then return end
+
+    currentVehicle = veh
+    SetVehicleModKit(veh, 0)
+
+    -- snapshot bazowy
+    local r, g, b = GetVehicleCustomPrimaryColour(veh)
+    originalPrimaryRGB = {r = r, g = g, b = b}
+    savedWheelType = GetVehicleWheelType(veh)
+    currentWheelType = savedWheelType
+    CaptureLightingOriginal(veh)
+
+    lib.registerMenu({
+        id = 'tuning_root_menu',
+        title = 'TunerOS - Live Preview',
+        position = 'top-right',
+        disableInput = true,
+        options = {
+            { label = "Karoseria", args = { open = 'body' }, close = false },
+            { label = "Koła i Zawieszenie", args = { open = 'wheels' }, close = false },
+            { label = "Osiągi (Performance)", args = { open = 'perf' }, close = false },
+            { label = "Wnętrze", args = { open = 'interior' }, close = false },
+            { label = "Oświetlenie", args = { open = 'lights' }, close = false },
+            { label = "Zamknij", args = { close = true }, close = true },
+        },
+        onClose = function()
+            ResetVehicleToOriginal()
+        end
+    }, function(_, _, args)
+        if not args then return end
+        if args.close then
+            ResetVehicleToOriginal()
+            return
+        end
+
+        if args.open == 'body' then OpenBodyMenu() return end
+        if args.open == 'wheels' then OpenWheelsMenu() return end
+        if args.open == 'perf' then OpenPerfMenu() return end
+        if args.open == 'interior' then OpenInteriorMenu() return end
+        if args.open == 'lights' then OpenLightsMenu() return end
+    end)
+
+    lib.showMenu('tuning_root_menu')
+end
+
+-- ==========================================
+-- PUBLIC: event + export (tablet może wywołać jedno i drugie)
+-- ==========================================
+
+RegisterNetEvent('awrp_tuning:openTabletMenu', function()
+    OpenTuningRootMenu()
+end)
+
+exports('OpenTuning', function()
+    OpenTuningRootMenu()
 end)

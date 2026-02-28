@@ -1,3 +1,6 @@
+-- Dodanie kolumny do tabeli pojazdów dla customowego tuningu
+ALTER TABLE `owned_vehicles` ADD COLUMN IF NOT EXISTS `awrp_tuning` LONGTEXT DEFAULT NULL;
+
 INSERT IGNORE INTO `items` (`name`, `label`, `weight`, `rare`, `can_remove`) VALUES
 ('tuner_tablet', 'Tablet tunera', 1, 0, 1),
 ('tuner_repairkit', 'Zestaw naprawczy tunera', 1, 0, 1),

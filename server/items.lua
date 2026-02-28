@@ -4,23 +4,15 @@ local ESX = exports["es_extended"]:getSharedObject()
 -- OBSŁUGA PRZEDMIOTÓW UŻYWALNYCH (USABLE ITEMS)
 -- ==========================================
 
--- Rejestrujemy Tablet Tunera, aby można było go kliknąć w ekwipunku
 ESX.RegisterUsableItem(Config.Items.Tools.Tablet, function(source)
     local xPlayer = ESX.GetPlayerFromId(source)
     if not xPlayer then return end
 
-    -- Weryfikacja, czy gracz pracujący w warsztacie (frakcja mechanika) może go użyć.
-    -- Zakładamy, że główna frakcja to 'mechanic' (zdefiniowane w configu, możesz to rozbudować).
     if xPlayer.job.name == 'mechanic' or xPlayer.job.name == 'tuner' then
-        -- Wysyłamy sygnał do klienta, aby otworzył interfejs ox_lib
-        TriggerClientEvent('awrp_tuning:openTablet', source)
+        -- Serwer sprawdza, czy gracz siedzi w aucie (opcjonalnie, lepiej w kliencie)
+        TriggerClientEvent('awrp_tuning:checkAndOpenTablet', source)
     else
-        -- Zwykły gracz nie wie, jak tego użyć lub nie ma dostępu do bazy
-        TriggerClientEvent('ox_lib:notify', source, {
-            title = 'Błąd dostępu',
-            description = 'Nie masz uprawnień do logowania w systemie diagnostycznym.',
-            type = 'error'
-        })
+        TriggerClientEvent('ox_lib:notify', source, { title = 'Błąd', description = 'Nie masz uprawnień.', type = 'error' })
     end
 end)
 

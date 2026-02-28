@@ -28,26 +28,35 @@ local function HasMechanicJob()
     return false
 end
 
+local function IsNearTuningZone(entity)
+    local coords = GetEntityCoords(entity)
+    for _, shop in pairs(Config.TunerShops) do
+        for _, zonePos in ipairs(shop.TuningZones) do
+            if #(coords - zonePos) < 10.0 then -- Sprawdza promień 10 metrów od punktu
+                return true
+            end
+        end
+    end
+    return false
+end
+
 -- ==========================================
 -- INICJALIZACJA OX_TARGET DLA POJAZDÓW
 -- ==========================================
 
 CreateThread(function()
-    -- Definiujemy opcje, które pojawią się na KAŻDYM pojeździe, 
-    -- ale tylko w określonych miejscach (bones) i tylko dla mechanika.
-    
     local targetOptions = {
         -- 1. STREFA SILNIKA (Maska / Przód)
         {
             name = 'tuning_engine',
             icon = 'fas fa-wrench',
             label = 'Modyfikacje pod maską',
-            bones = { 'engine', 'bonnet' }, -- 'bonnet' to maska w GTA
+            bones = { 'engine', 'bonnet' },
             canInteract = function(entity, distance, coords, name, bone)
-                return HasMechanicJob() and not IsVehicleBlacklisted(entity)
+                -- DODANO: Sprawdzenie strefy IsNearTuningZone(entity)
+                return HasMechanicJob() and not IsVehicleBlacklisted(entity) and IsNearTuningZone(entity)
             end,
             onSelect = function(data)
-                -- Wysyłamy sygnał do otwarcia menu z częściami silnikowymi, turbo, itp.
                 TriggerEvent('awrp_tuning:openZoneMenu', data.entity, 'engine')
             end
         },
@@ -59,10 +68,10 @@ CreateThread(function()
             label = 'Modyfikacje kół i zawieszenia',
             bones = { 'wheel_lf', 'wheel_rf', 'wheel_lr', 'wheel_rr' },
             canInteract = function(entity, distance, coords, name, bone)
-                return HasMechanicJob() and not IsVehicleBlacklisted(entity)
+                -- DODANO: Sprawdzenie strefy IsNearTuningZone(entity)
+                return HasMechanicJob() and not IsVehicleBlacklisted(entity) and IsNearTuningZone(entity)
             end,
             onSelect = function(data)
-                -- Wysyłamy sygnał do menu obsługującego hamulce, opony (drift tires), stance, felgi
                 TriggerEvent('awrp_tuning:openZoneMenu', data.entity, 'wheels')
             end
         },
@@ -72,12 +81,12 @@ CreateThread(function()
             name = 'tuning_rear',
             icon = 'fas fa-cogs',
             label = 'Modyfikacje tyłu',
-            bones = { 'boot', 'exhaust' }, -- 'boot' to bagażnik
+            bones = { 'boot', 'exhaust' },
             canInteract = function(entity, distance, coords, name, bone)
-                return HasMechanicJob() and not IsVehicleBlacklisted(entity)
+                -- DODANO: Sprawdzenie strefy IsNearTuningZone(entity)
+                return HasMechanicJob() and not IsVehicleBlacklisted(entity) and IsNearTuningZone(entity)
             end,
             onSelect = function(data)
-                -- Menu dla spoilerów, wydechów, zderzaków tylnych
                 TriggerEvent('awrp_tuning:openZoneMenu', data.entity, 'rear')
             end
         },
@@ -89,15 +98,14 @@ CreateThread(function()
             label = 'Modyfikacje karoserii i wnętrza',
             bones = { 'door_dside_f', 'door_pside_f' },
             canInteract = function(entity, distance, coords, name, bone)
-                return HasMechanicJob() and not IsVehicleBlacklisted(entity)
+                -- DODANO: Sprawdzenie strefy IsNearTuningZone(entity)
+                return HasMechanicJob() and not IsVehicleBlacklisted(entity) and IsNearTuningZone(entity)
             end,
             onSelect = function(data)
-                -- Menu dla lakieru (RGB/HEX), neonów, klatki bezpieczeństwa, foteli
                 TriggerEvent('awrp_tuning:openZoneMenu', data.entity, 'body')
             end
         }
     }
 
-    -- Rejestrujemy nasze opcje globalnie dla wszystkich pojazdów w grze
     exports.ox_target:addGlobalVehicle(targetOptions)
 end)

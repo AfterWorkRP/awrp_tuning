@@ -129,18 +129,29 @@ RegisterNetEvent('awrp_tuning:openTablet', function()
         })
     end
 
-    -- Wyświetlamy menu Tabletu
+-- Wyświetlamy menu Tabletu
     lib.registerContext({
         id = 'tuner_tablet_menu',
         title = _L('tablet_title') or 'TunerOS - System Zarządzania',
-        options = options
+        options = options,
+        onExit = function()
+            -- Ta funkcja odpali się automatycznie po zamknięciu menu klawiszem ESC
+            ClearPedTasks(PlayerPedId())
+        end
     })
 
-    -- Animacja wyciągania telefonu/tabletu (opcjonalnie)
+    -- Animacja wyciągania telefonu/tabletu
     TaskStartScenarioInPlace(ped, 'WORLD_HUMAN_STAND_MOBILE', 0, true)
     lib.showContext('tuner_tablet_menu')
-    
-    -- Kiedy menu zostanie zamknięte, czyścimy animację
-    -- ox_lib nie ma wbudowanego callbacku na zamknięcie kontekstu w tak prosty sposób, 
-    -- więc dla bezpieczeństwa animacja zniknie po ruchu gracza.
+end)
+
+RegisterNetEvent('awrp_tuning:checkAndOpenTablet', function()
+    local ped = PlayerPedId()
+    if IsPedInAnyVehicle(ped, false) then
+        -- Jeśli w aucie -> otwieramy nowe menu tuningu
+        TriggerEvent('awrp_tuning:openTabletMenu')
+    else
+        -- Jeśli poza autem -> otwieramy standardowe menu zarządzania (faktury, dyno)
+        TriggerEvent('awrp_tuning:openTablet')
+    end
 end)
