@@ -241,7 +241,7 @@ local function OpenModCategory(title, modType, requiredItem, returnMenuId)
 
     local numMods = 0
     if modType == 'livery' then
-        numMods = GetVehicleMod(veh, 48) > 0 and GetNumVehicleMods(veh, 48) or GetVehicleLiveryCount(veh)
+        numMods = GetNumVehicleMods(veh, 48) > 0 and GetNumVehicleMods(veh, 48) or GetVehicleLiveryCount(veh)
     elseif modType == 'window_tint' then numMods = 7
     elseif modType == 'plate_index' then numMods = 6
     elseif type(modType) == 'number' then numMods = GetNumVehicleMods(veh, modType) end
@@ -566,3 +566,24 @@ end
 
 RegisterNetEvent('awrp_tuning:openTabletMenu', function() OpenTuningRootMenu() end)
 exports('OpenTuning', function() OpenTuningRootMenu() end)
+
+-- Obsługa ox_target - otwieranie konkretnego działu w zależności od strefy
+RegisterNetEvent('awrp_tuning:openZoneMenu', function(vehicle, zone)
+    if not vehicle or vehicle == 0 then return end
+    
+    -- 1. Budujemy główne menu i zapisujemy snapshot auta
+    -- (Dzięki temu przycisk "Powrót" w podmenu będzie działał prawidłowo)
+    OpenTuningRootMenu()
+
+    -- 2. Wymuszamy kamerę z pliku camera.lua na konkretną strefę
+    TriggerEvent('awrp_tuning:setCamera', vehicle, zone)
+
+    -- 3. Otwieramy od razu konkretny dział w zależności od klikniętej strefy auta
+    if zone == 'engine' then
+        OpenPerfMenu()
+    elseif zone == 'wheels' then
+        OpenWheelsMenu()
+    elseif zone == 'rear' or zone == 'body' then
+        OpenBodyMenu()
+    end
+end)
